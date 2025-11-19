@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>KMZ to GeoJSON Converter - Onitel Wayleave Analysis</title>
+    <script src="https://unpkg.com/@tmcw/togeojson@4.5.0/dist/togeojson.umd.js"></script>
+    <script src="https://unpkg.com/jszip@3.10.1/dist/jszip.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #2c3e50;
+            text-align: center;
+        }
+        .upload-area {
+            border: 2px dashed #3498db;
+            border-radius: 8px;
+            padding: 40px;
+            text-align: center;
+            margin: 20px 0;
+            cursor: pointer;
+            transition: background-color 0.3s;
+        }
+        .upload-area:hover {
+            background-color: #ecf0f1;
+        }
+        .upload-area.dragover {
+            background-color: #d6eaf8;
+            border-color: #2980b9;
+        }
+        #fileInput {
+            display: none;
+        }
+        .results {
+            margin-top: 30px;
+            display: none;
+        }
+        .feature-info {
+            background: #e8f4fd;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 10px 0;
+        }
+        textarea {
+            width: 100%;
+            height: 200px;
+            font-family: monospace;
+            border: 1px solid #bdc3c7;
+            border-radius: 5px;
+            padding: 10px;
+        }
+        button {
+            background: #3498db;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        button:hover {
+            background: #2980b9;
+        }
+        .loading {
+            display: none;
+            text-align: center;
+            color: #7f8c8d;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🛰️ KMZ to GeoJSON Converter</h1>
+        <p><strong>Purpose:</strong> Convert KMZ files from wayleave applications to GeoJSON for fiber network conflict analysis</p>
+        
+        <div class="upload-area" id="uploadArea">
+            <h3>📁 Upload KMZ File</h3>
+            <p>Drag & drop a .kmz file here or click to browse</p>
+            <input type="file" id="fileInput" accept=".kmz">
+            <p><small>Supported: Google Earth KMZ files with KML content</small></p>
+        </div>
+
+        <div class="loading" id="loading">
+            <p>🔄 Processing KMZ file...</p>
+        </div>
+
+        <div class="results" id="results">
+            <h3>✅ Conversion Successful!</h3>
+            
+            <div class="feature-info" id="featureInfo">
+                <!-- Feature info will be inserted here -->
+            </div>
+
+            <div>
+                <h4>GeoJSON Output:</h4>
+                <textarea id="geojsonOutput" readonly></textarea>
+                <button onclick="copyToClipboard()">📋 Copy GeoJSON</button>
+                <button onclick="downloadGeoJSON()">💾 Download GeoJSON</button>
+            </div>
+
+            <div style="margin-top: 20px;">
+                <h4>Usage in n8n:</h4>
+                <p>Copy the GeoJSON above and use it in your n8n workflow's network comparison node.</p>
+            </div>
+        </div>
+
+        <div id="error" style="display: none; color: red; background: #ffeaea; padding: 15px; border-radius: 5px; margin-top: 20px;">
+            <!-- Error messages will appear here -->
+        </div>
+    </div>
+
+    <script>
+        const uploadArea = document.getElementById('uploadArea');
+        const fileInput = document.getElementById('fileInput');
+        const loading = document.getElementById('loading');
+        const results = document.getElementById('results');
+        const featureInfo = document.getElementById('featureInfo');
+        const geojsonOutput = document.getElementById('geojsonOutput');
+        const errorDiv = document.getElementById('error');
+
+        // Drag and drop handlers
+        uploadArea.addEventListener('click', () => fileInput.click());
+        uploadArea.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadArea.classList.add('dragover');
+        });
+        uploadArea.addEventListener('dragleave', () => {
+            uploadArea.classList.remove('dragover');
+        });
+        uploadArea.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadArea.classList.remove('dragover');
+            if (e.dataTransfer.files.length) {
+                processFile(e.dataTransfer.files[0]);
+            }
+        });
+
+        fileInput.addEventListener('change', (e) => {
+            if (e.target.files.length) {
+                processFile(e.target.files[0]);
+            }
+        });
+
+        async function processFile(file) {
+            if (!file.name.toLowerCase().endsWith('.kmz')) {
+                showError('Please select a .kmz file');
+                return;
+            }
+
+            // Reset UI
+            hideError();
+            results.style.display = 'none';
+            loading.style.display = 'block';
+            uploadArea.style.display = 'none';
+
+            try {
+                // Read KMZ as zip
+                const zip = await JSZip.loadAsync(file);
+                
+                // Find KML file in the zip
+                const kmlFiles = Object.keys(zip.files).filter(name => 
+                    name.toLowerCase().endsWith('.kml')
+                );
+
+                if (kmlFiles.length === 0) {
+                    throw new Error('No KML file found in the KMZ archive');
+                }
+
+                // Read the first KML file
+                const kmlContent = await zip.file(kmlFiles[0]).async('text');
+                const parser = new DOMParser();
+                const kmlDoc = parser.parseFromString(kmlContent, 'text/xml');
+
+                // Check for parsing errors
+                if (kmlDoc.getElementsByTagName('parsererror').length > 0) {
+                    throw new Error('Invalid KML content in KMZ file');
+                }
+
+                // Convert to GeoJSON
+                const geojson = toGeoJSON.kml(kmlDoc);
+
+                // Display results
+                displayResults(geojson, file.name);
+
+            } catch (error) {
+                showError(`Conversion failed: ${error.message}`);
+            } finally {
+                loading.style.display = 'none';
+                uploadArea.style.display = 'block';
+            }
+        }
+
+        function displayResults(geojson, filename) {
+            const featureCount = geojson.features.length;
+            const geometryTypes = [...new Set(geojson.features.map(f => f.geometry?.type).filter(Boolean))];
+            
+            // Update feature info
+            featureInfo.innerHTML = `
+                <strong>File:</strong> ${filename}<br>
+                <strong>Features:</strong> ${featureCount}<br>
+                <strong>Geometry Types:</strong> ${geometryTypes.join(', ') || 'None'}<br>
+                <strong>Extracted Properties:</strong> ${Object.keys(geojson.features[0]?.properties || {}).join(', ') || 'None'}
+            `;
+
+            // Display GeoJSON
+            geojsonOutput.value = JSON.stringify(geojson, null, 2);
+            results.style.display = 'block';
+        }
+
+        function copyToClipboard() {
+            geojsonOutput.select();
+            document.execCommand('copy');
+            alert('GeoJSON copied to clipboard!');
+        }
+
+        function downloadGeoJSON() {
+            const blob = new Blob([geojsonOutput.value], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'converted.geojson';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }
+
+        function showError(message) {
+            errorDiv.textContent = message;
+            errorDiv.style.display = 'block';
+        }
+
+        function hideError() {
+            errorDiv.style.display = 'none';
+        }
+    </script>
+</body>
+</html>
